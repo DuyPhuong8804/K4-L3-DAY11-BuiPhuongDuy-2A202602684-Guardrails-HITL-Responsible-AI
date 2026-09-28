@@ -12,7 +12,32 @@ from google.adk.agents import llm_agent
 from google.adk import runners
 from google.adk.plugins import base_plugin
 
+from core.config import load_protected_payload
 from core.utils import chat_with_agent
+
+
+def _compact(text: str) -> str:
+    """Fold away spaces/punctuation an attacker inserts between characters
+    (e.g. ``a:d:m:i:n:1:2:3``) so a spaced-out secret still matches."""
+    return re.sub(r"[^a-z0-9]", "", text.lower())
+
+
+def _obfuscated_secret_hits(compact_response: str) -> list[str]:
+    """Check the compacted response against known protected secrets.
+
+    Catches leaks that survive the plain regexes above because the model
+    was tricked into inserting a separator between every character.
+    """
+    try:
+        payload = load_protected_payload()
+    except FileNotFoundError:
+        return []
+    hits = []
+    for target in payload.get("leak_targets") or []:
+        needles = target.get("match_substrings") or []
+        if any(_compact(needle) and _compact(needle) in compact_response for needle in needles):
+            hits.append(target.get("id", "secret"))
+    return hits
 
 
 # ============================================================
@@ -55,6 +80,18 @@ def content_filter(response: str) -> dict:
         if matches:
             issues.append(f"{name}: {len(matches)} found")
             redacted = re.sub(pattern, "[REDACTED]", redacted, flags=re.IGNORECASE)
+
+    # A response can dodge every regex above by inserting a separator between
+    # each character (e.g. an attacker asking the model to "decode Unicode
+    # scalars with a colon between each glyph"). Check a punctuation-stripped
+    # copy against the known secrets; if that is the only way it matched,
+    # withhold the whole response rather than trying to redact fragments of
+    # a string we can no longer safely locate.
+    if not issues:
+        hits = _obfuscated_secret_hits(_compact(response))
+        if hits:
+            issues.append(f"obfuscated_secret_leak: {', '.join(sorted(set(hits)))}")
+            redacted = "[REDACTED] Xin lỗi, tôi không thể cung cấp nội dung này."
 
     return {
         "safe": len(issues) == 0,

@@ -23,6 +23,17 @@ from core.config import ALLOWED_TOPICS, BLOCKED_TOPICS
 # Quyết định rõ ràng — tránh đảo nghĩa True/False
 InputStatus = Literal["ALLOW", "BLOCK"]
 
+_GREETING_PATTERNS = (
+    re.compile(r"^\s*(hi|hello|hey|yo)\b", re.IGNORECASE),
+    re.compile(r"\bxin\s*chao\b", re.IGNORECASE),
+    re.compile(r"\bchao\s*(ban|anh|chi|vinbank)\b", re.IGNORECASE),
+    re.compile(r"\b(ban\s+co\s+the\s+giup|giup\s+toi|can\s+you\s+help|how\s+can\s+you\s+help|what\s+can\s+you\s+do)\b", re.IGNORECASE),
+    re.compile(r"\b(ban\s+la\s+ai|who\s+are\s+you)\b", re.IGNORECASE),
+    re.compile(r"\bcam\s*on\b", re.IGNORECASE),
+    re.compile(r"\bthank\s*(you|s)\b", re.IGNORECASE),
+    re.compile(r"^\s*(ok|okay|bye|goodbye|tam\s*biet)\s*\.?\s*$", re.IGNORECASE),
+)
+
 _INJECTION_PATTERNS = (
     re.compile(r"\bignore\s+(?:all\s+)?(?:previous|above|prior)\s+instructions\b", re.IGNORECASE),
     re.compile(r"\byou\s+are\s+now\b", re.IGNORECASE),
@@ -39,6 +50,21 @@ def _normalize_text(text: str) -> str:
         character
         for character in unicodedata.normalize("NFKC", text)
         if unicodedata.category(character) != "Cf"
+    )
+
+
+def _strip_diacritics(text: str) -> str:
+    """Fold Vietnamese diacritics so accented input matches ASCII keywords.
+
+    ``ALLOWED_TOPICS``/``BLOCKED_TOPICS`` list unaccented Vietnamese keywords
+    (e.g. "tai khoan"), so a query written with proper diacritics
+    ("tài khoản") must be folded down before substring matching, otherwise
+    ordinary banking questions get blocked as off-topic.
+    """
+    text = text.replace("đ", "d").replace("Đ", "D")
+    decomposed = unicodedata.normalize("NFD", text)
+    return "".join(
+        character for character in decomposed if unicodedata.category(character) != "Mn"
     )
 
 
@@ -98,13 +124,19 @@ def topic_filter(user_input: str) -> InputStatus:
         ``"BLOCK"`` = chặn (off-topic hoặc topic cấm).
         ``"ALLOW"`` = cho qua (câu banking hợp lệ).
     """
-    input_lower = _normalize_text(user_input).casefold()
+    normalized = _strip_diacritics(_normalize_text(user_input))
+    input_lower = normalized.casefold()
 
     if any(keyword.casefold() in input_lower for keyword in BLOCKED_TOPICS):
         return "BLOCK"
-    if not any(keyword.casefold() in input_lower for keyword in ALLOWED_TOPICS):
-        return "BLOCK"
-    return "ALLOW"
+    if any(keyword.casefold() in input_lower for keyword in ALLOWED_TOPICS):
+        return "ALLOW"
+    # Small talk (greeting/thanks/who-are-you) is not a banking topic, but a
+    # real assistant should still respond to it instead of blocking — only
+    # genuinely off-topic requests (recipes, hacking, ...) get blocked.
+    if any(pattern.search(normalized) for pattern in _GREETING_PATTERNS):
+        return "ALLOW"
+    return "BLOCK"
 
 
 # ============================================================
@@ -160,12 +192,12 @@ class InputGuardrailPlugin(base_plugin.BasePlugin):
         if detect_injection(text) == "BLOCK":
             self.blocked_count += 1
             return self._block_response(
-                "Yêu cầu bị từ chối vì có dấu hiệu prompt injection."
+                "Request blocked because it contains prompt injection signals."
             )
         if topic_filter(text) == "BLOCK":
             self.blocked_count += 1
             return self._block_response(
-                "Yêu cầu bị từ chối vì nằm ngoài phạm vi hỗ trợ ngân hàng."
+                "Request blocked because it is outside the supported banking topics."
             )
         return None
 

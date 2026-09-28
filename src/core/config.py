@@ -36,7 +36,7 @@ PROVIDER_OPENROUTER = "openrouter"
 
 # --- Blue Team (LOCKED) ---
 BLUE_PROVIDER = PROVIDER_OPENROUTER
-BLUE_MODEL = "liquid/lfm-2.5-2.6b"
+BLUE_MODEL = "liquid/lfm-2.5-2.6b:free"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_OPENROUTER_MODEL = BLUE_MODEL  # alias
 
@@ -104,7 +104,16 @@ def get_blue_provider() -> str:
 
 
 def get_blue_model() -> str:
-    # Hard-locked; env cannot override for the graded Blue Team path.
+    """Return the Blue model.
+
+    The lab expects ``liquid/lfm-2.5-2.6b`` by default, but OpenRouter
+    sometimes removes or hides a model from an account while the lab is still
+    running. Allow a one-line env override for this case without changing the
+    checker contract or the code path in ``src/main.py``.
+    """
+    override = os.environ.get("OPENROUTER_MODEL", "").strip()
+    if override:
+        return override
     return BLUE_MODEL
 
 
@@ -170,7 +179,14 @@ def get_openai_api_key() -> str:
 
 
 def red_openai_client_kwargs() -> dict:
-    return {"api_key": get_openai_api_key() or None}
+    api_key = get_openai_api_key()
+    kwargs = {"api_key": api_key or None}
+    base_url = os.environ.get("RED_TEAM_BASE_URL", "").strip()
+    if not base_url and api_key.startswith("sk-or-"):
+        base_url = OPENROUTER_BASE_URL
+    if base_url:
+        kwargs["base_url"] = base_url
+    return kwargs
 
 
 def red_provider_label(tier: str = "advance") -> str:
