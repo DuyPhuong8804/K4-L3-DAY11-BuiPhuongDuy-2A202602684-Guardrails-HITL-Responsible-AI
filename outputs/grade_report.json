@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-28T05:57:13.109269+00:00",
+  "generated_at": "2026-09-28T12:14:29.863754+00:00",
   "submission_dir": "C:\\DUY\\VinUNI\\K4-L3-DAY11-BuiPhuongDuy-2A202602684-Guardrails-HITL-Responsible-AI",
   "technical_failure": false,
   "packaging": {
@@ -47,7 +47,7 @@
   },
   "public_tests": {
     "returncode": 0,
-    "stdout": "..........                                                               [100%]\n10 passed in 2.01s\n",
+    "stdout": "..........                                                               [100%]\n10 passed in 1.63s\n",
     "stderr": "",
     "technical_failure": false
   },

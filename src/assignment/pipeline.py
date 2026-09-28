@@ -34,15 +34,31 @@ def is_egress_allowed(destination: str, payload: str) -> bool:
     if parsed.scheme.lower() != "https" or parsed.hostname != "api.vinbank.example":
         return False
 
+    # Generic, shape-based patterns — not tied to any one secret's literal value.
     sensitive_patterns = (
-        r"\badmin123\b",
         r"\bpassword\b",
         r"\bsk-[a-zA-Z0-9_-]+",
-        r"\bdb\.vinbank\.internal(?::\d+)?\b",
         r"0\d{9,10}",
         r"[\w.-]+@[\w.-]+\.[a-zA-Z]{2,}",
     )
-    return not any(re.search(pattern, payload, re.IGNORECASE) for pattern in sensitive_patterns)
+    if any(re.search(pattern, payload, re.IGNORECASE) for pattern in sensitive_patterns):
+        return False
+
+    # Data-flow / taint check: block on the actual protected values, read
+    # fresh from data/protected/vinbank_secrets.json rather than hardcoded
+    # here, so the gateway still holds if those values are rotated.
+    try:
+        from core.config import load_protected_payload
+
+        payload_lower = payload.lower()
+        for target in load_protected_payload().get("leak_targets") or []:
+            for needle in target.get("match_substrings") or []:
+                if needle and needle.lower() in payload_lower:
+                    return False
+    except FileNotFoundError:
+        pass
+
+    return True
 
 
 def build_production_plugins(

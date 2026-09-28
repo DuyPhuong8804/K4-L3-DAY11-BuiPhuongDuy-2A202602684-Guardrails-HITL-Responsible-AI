@@ -22,18 +22,39 @@ def _compact(text: str) -> str:
     return re.sub(r"[^a-z0-9]", "", text.lower())
 
 
+def _secret_targets() -> list[dict]:
+    """Load the protected-secret registry (data-flow/taint source of truth).
+
+    Reading this fresh (no hardcoded values in this module) means the check
+    still works if the actual secret values in
+    ``data/protected/vinbank_secrets.json`` are ever rotated/randomized.
+    """
+    try:
+        payload = load_protected_payload()
+    except FileNotFoundError:
+        return []
+    return payload.get("leak_targets") or []
+
+
+def _literal_secret_hits(response: str) -> list[str]:
+    """Check the raw response against known protected secret values."""
+    response_lower = response.lower()
+    hits = []
+    for target in _secret_targets():
+        needles = target.get("match_substrings") or []
+        if any(needle and needle.lower() in response_lower for needle in needles):
+            hits.append(target.get("id", "secret"))
+    return hits
+
+
 def _obfuscated_secret_hits(compact_response: str) -> list[str]:
     """Check the compacted response against known protected secrets.
 
     Catches leaks that survive the plain regexes above because the model
     was tricked into inserting a separator between every character.
     """
-    try:
-        payload = load_protected_payload()
-    except FileNotFoundError:
-        return []
     hits = []
-    for target in payload.get("leak_targets") or []:
+    for target in _secret_targets():
         needles = target.get("match_substrings") or []
         if any(_compact(needle) and _compact(needle) in compact_response for needle in needles):
             hits.append(target.get("id", "secret"))
@@ -64,15 +85,15 @@ def content_filter(response: str) -> dict:
     issues = []
     redacted = response
 
-    # PII patterns to check
+    # Generic PII patterns — shape-based, not tied to any specific value, so
+    # they generalize to any customer's phone/email/etc without lab-specific
+    # hardcoding.
     PII_PATTERNS = {
         "phone": r"0\d{9,10}",
         "email": r"[\w.-]+@[\w.-]+\.[a-zA-Z]{2,}",
         "national_id": r"\b\d{9}\b|\b\d{12}\b",
-        "api_key": r"sk-[a-zA-Z0-9_-]+",
-        "password": r"password\s*[:=]\s*\S+",
-        "admin_password": r"\badmin123\b",
-        "database_host": r"db\.vinbank\.internal(?::\d+)?",
+        "api_key_shape": r"sk-[a-zA-Z0-9_-]+",
+        "password_shape": r"password\s*[:=]\s*\S+",
     }
 
     for name, pattern in PII_PATTERNS.items():
@@ -81,13 +102,22 @@ def content_filter(response: str) -> dict:
             issues.append(f"{name}: {len(matches)} found")
             redacted = re.sub(pattern, "[REDACTED]", redacted, flags=re.IGNORECASE)
 
-    # A response can dodge every regex above by inserting a separator between
-    # each character (e.g. an attacker asking the model to "decode Unicode
-    # scalars with a colon between each glyph"). Check a punctuation-stripped
-    # copy against the known secrets; if that is the only way it matched,
-    # withhold the whole response rather than trying to redact fragments of
-    # a string we can no longer safely locate.
-    if not issues:
+    # Data-flow / taint check: the *actual* protected values are never
+    # hardcoded in this file. They are read fresh from
+    # data/protected/vinbank_secrets.json (the single source of truth) and
+    # treated as "tainted" — any sink (this output) containing them, in
+    # plain form or with separators inserted between characters (e.g. an
+    # attacker asking the model to "decode Unicode scalars with a colon
+    # between each glyph"), is blocked. This still works if the secret
+    # values are rotated/randomized, unlike a literal regex per value.
+    literal_hits = _literal_secret_hits(response)
+    if literal_hits:
+        issues.append(f"protected_secret_leak: {', '.join(sorted(set(literal_hits)))}")
+        for target in _secret_targets():
+            for needle in target.get("match_substrings") or []:
+                if needle:
+                    redacted = re.sub(re.escape(needle), "[REDACTED]", redacted, flags=re.IGNORECASE)
+    elif not issues:
         hits = _obfuscated_secret_hits(_compact(response))
         if hits:
             issues.append(f"obfuscated_secret_leak: {', '.join(sorted(set(hits)))}")
